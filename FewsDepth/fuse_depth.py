@@ -7,6 +7,7 @@ from scipy.linalg import svd
 import kornia
 import torch
 from unidepth.utils.visualization import save_file_ply
+import copy
 
 from os import listdir
 from os.path import join
@@ -94,9 +95,9 @@ def pairwise_pose(img1_path, img2_path, model):
 
     initial_transform_matrix = compose_transform_matrix(Rt)
 
-    return initial_transform_matrix, scale, torch_intrinsic1, torch_pts1
+    return initial_transform_matrix, scale, torch_intrinsic1, torch_pts1, depth1
 
-def create_depth_map(pointcloud, intrinsics_matrix, image_shape):
+def create_depth_map(pointcloud, intrinsics_matrix, image_shape, method='min'):
     # Project 3D points onto image plane
     projected_points, _ = cv2.projectPoints(pointcloud, np.eye(3), np.zeros(3), intrinsics_matrix, None)
     H, W = image_shape
@@ -120,7 +121,36 @@ def create_depth_map(pointcloud, intrinsics_matrix, image_shape):
             if len(data) == 0: 
                 final_depth[i][j] = 0
                 continue
-            median = np.median(data)
-            final_depth[i][j] = median
+            if method == 'min':
+                val = np.min(data)
+            if method == 'median':
+                val = np.median(data)
+            if method == 'stddev':
+                val = np.std(data)
+            final_depth[i][j] = val
 
     return final_depth
+
+def icp(pcd1, pcd2):
+    source = copy.deepcopy(pcd1)
+    source.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    target = copy.deepcopy(pcd2)
+    target.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    reg_p2p = o3d.pipelines.registration.registration_icp(
+        source, target, 0.1, np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=500))
+    print("Transformation is:")
+    print(reg_p2p.transformation)
+    return reg_p2p.transformation
+
+def percent_within_tolerance(pred_depth_map, ground_truth_depth_map, tolerance, valid_mask):
+    abs_diff = np.abs(pred_depth_map - ground_truth_depth_map)
+    
+    within_tolerance = np.logical_and(abs_diff <= tolerance, valid_mask)
+    within_tolerance_count = np.count_nonzero(within_tolerance)
+    total_valid_pixels = np.count_nonzero(valid_mask)
+    
+    percent_within = (within_tolerance_count / total_valid_pixels) * 100
+    
+    return percent_within
